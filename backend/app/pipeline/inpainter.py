@@ -11,9 +11,22 @@ logger = structlog.get_logger()
 
 MASK_PADDING = 5
 
+# Module-level singleton for model preloading
+_shared_lama_instance = None
+
+
+def get_shared_lama():
+    """Get or create the shared SimpleLama instance."""
+    global _shared_lama_instance
+    if _shared_lama_instance is None:
+        from simple_lama_inpainting import SimpleLama
+
+        _shared_lama_instance = SimpleLama()
+    return _shared_lama_instance
+
 
 class Inpainter(PipelineStage):
-    """STAGE ④-remove: Remove original text using LaMa inpainting."""
+    """STAGE 4-remove: Remove original text using LaMa inpainting."""
 
     name = "inpainter"
 
@@ -21,11 +34,9 @@ class Inpainter(PipelineStage):
         self._lama = None
 
     def _get_lama(self):
-        """Lazy-load LaMa model."""
+        """Use the shared LaMa singleton."""
         if self._lama is None:
-            from simple_lama_inpainting import SimpleLama
-
-            self._lama = SimpleLama()
+            self._lama = get_shared_lama()
         return self._lama
 
     async def process(self, ctx: PipelineContext) -> PipelineContext:

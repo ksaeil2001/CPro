@@ -1,3 +1,4 @@
+import json
 import os
 import uuid
 
@@ -30,6 +31,8 @@ async def get_job_status(
         total_cost_krw=job.total_cost_krw,
         processing_time_ms=job.processing_time_ms,
         error_message=job.error_message,
+        warnings=json.loads(job.warnings_json) if job.warnings_json else [],
+        current_stage=job.current_stage,
         created_at=job.created_at,
     )
 

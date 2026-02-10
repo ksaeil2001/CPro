@@ -87,6 +87,19 @@ export default function ResultPage({
           </div>
         </div>
 
+        {status.warnings && status.warnings.length > 0 && (
+          <div className="space-y-2">
+            {status.warnings.map((warning: string, idx: number) => (
+              <div
+                key={idx}
+                className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800"
+              >
+                {warning}
+              </div>
+            ))}
+          </div>
+        )}
+
         <a href="/" className="text-blue-600 hover:underline">
           ← 새로운 번역
         </a>
@@ -97,7 +110,11 @@ export default function ResultPage({
   // Processing state
   return (
     <div className="flex flex-col items-center gap-6 py-10">
-      <ProcessingStatus status={status.status} />
+      <ProcessingStatus
+        status={status.status}
+        currentStage={status.current_stage}
+        warnings={status.warnings}
+      />
       <p className="text-sm text-gray-500">작업 ID: {jobId}</p>
     </div>
   );

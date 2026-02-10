@@ -1,7 +1,8 @@
+import asyncio
 import json
 
 import structlog
-from openai import AsyncOpenAI
+from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, RateLimitError
 
 from app.core.config import settings
 from app.pipeline.base import PipelineContext, PipelineStage
@@ -11,13 +12,18 @@ logger = structlog.get_logger()
 
 
 class Translator(PipelineStage):
-    """STAGE ③: Translate text using GPT-4o-mini."""
+    """STAGE 3: Translate text using GPT-4o-mini."""
 
     name = "translator"
 
     def __init__(self, circuit_breaker: CircuitBreaker | None = None):
-        self.client = AsyncOpenAI(api_key=settings.openai_api_key)
+        self.client = AsyncOpenAI(
+            api_key=settings.openai_api_key,
+            timeout=settings.openai_timeout_s,
+            max_retries=0,  # We handle retries ourselves
+        )
         self.circuit_breaker = circuit_breaker or CircuitBreaker("openai")
+        self.max_retries = settings.openai_max_retries
 
     async def process(self, ctx: PipelineContext) -> PipelineContext:
         if not ctx.translation_prompt:
@@ -40,7 +46,8 @@ class Translator(PipelineStage):
                 response_format={"type": "json_object"},
             )
 
-        response = await self.circuit_breaker.call(_call_openai)
+        # Retry with exponential backoff
+        response = await self._call_with_retry(_call_openai, ctx)
 
         # Calculate cost
         input_tokens = response.usage.prompt_tokens
@@ -56,6 +63,8 @@ class Translator(PipelineStage):
 
         # Parse response
         raw_content = response.choices[0].message.content
+        expected_count = ctx.metadata.get("translation_entry_count", 0)
+
         try:
             parsed = json.loads(raw_content)
             translations = parsed.get("translations", [])
@@ -66,6 +75,19 @@ class Translator(PipelineStage):
                 job_id=str(ctx.job_id),
             )
             translations = []
+            ctx.metadata.setdefault("warnings", []).append(
+                "Translation response could not be parsed. Text regions will appear blank."
+            )
+
+        # Warn about missing translations
+        if expected_count > 0 and len(translations) == 0:
+            ctx.metadata.setdefault("warnings", []).append(
+                f"Translation returned 0 results for {expected_count} text regions."
+            )
+        elif expected_count > 0 and len(translations) < expected_count:
+            ctx.metadata.setdefault("warnings", []).append(
+                f"Partial translation: {len(translations)}/{expected_count} regions translated."
+            )
 
         ctx.metadata["raw_translations"] = translations
 
@@ -78,3 +100,41 @@ class Translator(PipelineStage):
             job_id=str(ctx.job_id),
         )
         return ctx
+
+    async def _call_with_retry(self, func, ctx: PipelineContext):
+        """Call OpenAI with retry and exponential backoff."""
+        last_error = None
+        for attempt in range(1, self.max_retries + 2):
+            try:
+                return await asyncio.wait_for(
+                    self.circuit_breaker.call(func),
+                    timeout=settings.openai_timeout_s + 5,
+                )
+            except (asyncio.TimeoutError, APITimeoutError, APIConnectionError) as e:
+                last_error = e
+                if attempt <= self.max_retries:
+                    wait = 2 ** (attempt - 1)  # 1s, 2s
+                    logger.warning(
+                        "translator.retry",
+                        attempt=attempt,
+                        max_retries=self.max_retries,
+                        wait_s=wait,
+                        error=str(e),
+                        job_id=str(ctx.job_id),
+                    )
+                    await asyncio.sleep(wait)
+                else:
+                    raise
+            except RateLimitError as e:
+                last_error = e
+                if attempt <= self.max_retries:
+                    wait = 4 ** attempt  # 4s, 16s
+                    logger.warning(
+                        "translator.rate_limited",
+                        wait_s=wait,
+                        job_id=str(ctx.job_id),
+                    )
+                    await asyncio.sleep(wait)
+                else:
+                    raise
+        raise last_error

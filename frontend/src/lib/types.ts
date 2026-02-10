@@ -5,6 +5,8 @@ export interface JobStatus {
   total_cost_krw: number;
   processing_time_ms: number | null;
   error_message: string | null;
+  warnings: string[];
+  current_stage: string | null;
   created_at: string | null;
 }
 

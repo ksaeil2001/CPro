@@ -3,13 +3,16 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # Database
-    database_url: str = (
-        "postgresql+asyncpg://manga:manga_dev_pass@db:5432/manga_translator"
-    )
+    database_url: str = ""  # Must be set via DATABASE_URL env var
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
+    db_pool_recycle_s: int = 3600
 
     # OpenAI
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
+    openai_timeout_s: int = 30
+    openai_max_retries: int = 2
 
     # Google Vision (backup OCR)
     google_application_credentials: str = ""
@@ -26,11 +29,24 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     debug: bool = False
 
+    # Upload limits
+    max_upload_size_bytes: int = 20 * 1024 * 1024  # 20 MB
+    max_image_dimension: int = 10000
+
     # Fonts
     font_path: str = "/app/fonts/NotoSansKR-Regular.ttf"
+    font_download_url: str = (
+        "https://github.com/google/fonts/raw/main/ofl/notosanskr/NotoSansKR%5Bwght%5D.ttf"
+    )
+    ensure_font_on_startup: bool = True
 
     # Result storage
     result_dir: str = "/tmp/results"
+    result_ttl_hours: int = 24
+    cleanup_interval_minutes: int = 60
+
+    # Model preloading
+    preload_models: bool = True
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

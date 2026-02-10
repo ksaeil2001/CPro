@@ -15,15 +15,18 @@ logger = structlog.get_logger()
 TEXT_PADDING = 5
 # Line height multiplier
 LINE_HEIGHT_FACTOR = 1.3
+# Minimum font size (consistent with translation_mapper)
+MIN_FONT_SIZE = 12
 
 
 class Typesetter(PipelineStage):
-    """STAGE ④-insert: Render translated Korean text onto the image."""
+    """STAGE 4-insert: Render translated Korean text onto the image."""
 
     name = "typesetter"
 
     def __init__(self, font_path: str | None = None):
         self.font_path = font_path or settings.font_path
+        self._used_fallback_font = False
 
     async def process(self, ctx: PipelineContext) -> PipelineContext:
         base_image = ctx.inpainted_image if ctx.inpainted_image is not None else ctx.preprocessed_image
@@ -34,9 +37,15 @@ class Typesetter(PipelineStage):
             ctx.result_image = base_image
             return ctx
 
+        self._used_fallback_font = False
         ctx.result_image = await asyncio.get_event_loop().run_in_executor(
             None, self._render, base_image, ctx.translations
         )
+
+        if self._used_fallback_font:
+            ctx.metadata.setdefault("warnings", []).append(
+                "Font file not found; fallback bitmap font used. Korean text may not render correctly."
+            )
 
         logger.info(
             "typesetter.completed",
@@ -70,7 +79,7 @@ class Typesetter(PipelineStage):
 
             # If text overflows, reduce font size and re-wrap
             if total_text_h > box_h:
-                reduced_size = max(10, int(t.font_size * box_h / total_text_h))
+                reduced_size = max(MIN_FONT_SIZE, int(t.font_size * box_h / total_text_h))
                 font = self._load_font(reduced_size)
                 lines = self._wrap_text(draw, t.translated, font, box_w)
                 line_height = int(reduced_size * LINE_HEIGHT_FACTOR)
@@ -107,10 +116,15 @@ class Typesetter(PipelineStage):
         try:
             if os.path.exists(self.font_path):
                 return ImageFont.truetype(self.font_path, size)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("typesetter.font_load_error", error=str(e), font_path=self.font_path)
         # Fallback to default font
-        logger.warning("typesetter.font_fallback", font_path=self.font_path)
+        logger.warning(
+            "typesetter.font_fallback",
+            font_path=self.font_path,
+            detail="Using default bitmap font - Korean glyphs will NOT render correctly",
+        )
+        self._used_fallback_font = True
         return ImageFont.load_default()
 
     def _wrap_text(

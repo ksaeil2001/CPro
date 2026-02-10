@@ -1,7 +1,9 @@
 import time
 
 import structlog
+from sqlalchemy import select
 
+from app.models.job import Job
 from app.pipeline.base import PipelineContext, PipelineStage
 from app.services.cost_tracker import CostTracker
 
@@ -15,11 +17,27 @@ class PipelineOrchestrator:
         self.stages = stages
         self.cost_tracker = cost_tracker
 
+    async def _update_current_stage(self, stage_name: str) -> None:
+        """Update the job's current_stage in the database for progress tracking."""
+        try:
+            result = await self.cost_tracker.db.execute(
+                select(Job).where(Job.id == self.cost_tracker.job_id)
+            )
+            job = result.scalar_one()
+            job.current_stage = stage_name
+            await self.cost_tracker.db.flush()
+        except Exception as e:
+            logger.warning("orchestrator.stage_update_failed", error=str(e))
+
     async def run(self, ctx: PipelineContext) -> PipelineContext:
         total_start = time.monotonic()
 
         for stage in self.stages:
             stage_start = time.monotonic()
+
+            # Update current stage for progress reporting
+            await self._update_current_stage(stage.name)
+
             logger.info(
                 "pipeline.stage.start",
                 stage=stage.name,

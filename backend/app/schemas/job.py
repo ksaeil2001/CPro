@@ -17,6 +17,8 @@ class JobStatusResponse(BaseModel):
     total_cost_krw: float = 0.0
     processing_time_ms: int | None = None
     error_message: str | None = None
+    warnings: list[str] = []
+    current_stage: str | None = None
     created_at: datetime | None = None
 
     model_config = {"from_attributes": True}

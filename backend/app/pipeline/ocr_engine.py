@@ -11,9 +11,27 @@ logger = structlog.get_logger()
 # Minimum confidence to accept OCR result
 MIN_CONFIDENCE = 0.3
 
+# Module-level singleton for model preloading
+_shared_ocr_instance = None
+
+
+def get_shared_ocr():
+    """Get or create the shared PaddleOCR instance."""
+    global _shared_ocr_instance
+    if _shared_ocr_instance is None:
+        from paddleocr import PaddleOCR
+
+        _shared_ocr_instance = PaddleOCR(
+            use_angle_cls=True,
+            lang="japan",
+            use_gpu=False,
+            show_log=False,
+        )
+    return _shared_ocr_instance
+
 
 class OcrEngine(PipelineStage):
-    """STAGE ②: OCR using PaddleOCR.
+    """STAGE 2: OCR using PaddleOCR.
 
     Crops each detected region and runs OCR to extract text.
     """
@@ -24,16 +42,9 @@ class OcrEngine(PipelineStage):
         self._ocr = None
 
     def _get_ocr(self):
-        """Lazy-load PaddleOCR to avoid import-time overhead."""
+        """Use the shared PaddleOCR singleton."""
         if self._ocr is None:
-            from paddleocr import PaddleOCR
-
-            self._ocr = PaddleOCR(
-                use_angle_cls=True,
-                lang="japan",
-                use_gpu=False,
-                show_log=False,
-            )
+            self._ocr = get_shared_ocr()
         return self._ocr
 
     async def process(self, ctx: PipelineContext) -> PipelineContext:
