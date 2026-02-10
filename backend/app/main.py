@@ -106,45 +106,82 @@ async def _cleanup_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("starting_manga_translator_backend")
+    """Application lifespan manager with comprehensive startup validation."""
+    startup_errors = []
 
-    # Validate required settings
-    if not settings.database_url:
-        raise RuntimeError(
-            "DATABASE_URL is not set. "
-            "Set the DATABASE_URL environment variable or add it to .env"
-        )
-    if not settings.openai_api_key:
-        logger.warning(
-            "startup.no_openai_key",
-            detail="Translation will fail without an API key",
-        )
+    logger.info("startup.beginning", version=app.version)
 
-    # Ensure font file exists
-    await _ensure_font()
+    # Phase 1: Config validated by Pydantic (already done if we reach here)
+    masked_db = settings.database_url.split("@")[0] + "@[REDACTED]"
+    logger.info(
+        "startup.config_validated",
+        database=masked_db,
+        openai_key_prefix=settings.openai_api_key[:10] + "...",
+    )
 
-    # Preload ML models in parallel
+    # Phase 2: Test database connectivity
+    logger.info("startup.testing_database_connection")
+    try:
+        from app.core.database import verify_database_connection
+
+        await verify_database_connection()
+        logger.info("startup.database_connected")
+    except Exception as e:
+        logger.error("startup.database_connection_failed", error=str(e))
+        # For database, we should fail fast - can't run without DB
+        raise RuntimeError(f"Failed to connect to database. Cannot start application.\n{e}") from e
+
+    # Phase 3: Ensure font file exists
+    logger.info("startup.checking_font")
+    try:
+        await _ensure_font()
+        logger.info("startup.font_ready")
+    except Exception as e:
+        logger.error("startup.font_check_failed", error=str(e))
+        startup_errors.append(f"Font: {str(e)}")
+        # Font is important but not critical - warn and continue
+
+    # Phase 4: Preload ML models in parallel
     if settings.preload_models:
         logger.info("startup.preloading_models")
         loop = asyncio.get_event_loop()
         ocr_future = loop.run_in_executor(None, _preload_ocr)
         lama_future = loop.run_in_executor(None, _preload_lama)
-        await asyncio.gather(ocr_future, lama_future, return_exceptions=True)
+        results = await asyncio.gather(ocr_future, lama_future, return_exceptions=True)
+
+        # Check for model loading errors
+        for idx, result in enumerate(results):
+            if isinstance(result, Exception):
+                model_name = ["OCR", "LaMa"][idx]
+                logger.error(f"startup.model_preload_failed", model=model_name, error=str(result))
+                startup_errors.append(f"{model_name}: {str(result)}")
+
         logger.info("startup.models_preloaded")
 
-    # Start result cleanup background task
+    # Phase 5: Log startup warnings (non-critical issues)
+    if startup_errors:
+        logger.warning(
+            "startup.completed_with_warnings",
+            warnings=startup_errors,
+            message="Some components failed to initialize",
+        )
+    else:
+        logger.info("startup.completed_successfully", message="All systems operational")
+
+    # Start background tasks
     cleanup_task = asyncio.create_task(_cleanup_loop())
 
     yield
 
     # Shutdown
+    logger.info("shutdown.beginning")
     cleanup_task.cancel()
     try:
         await cleanup_task
     except asyncio.CancelledError:
         pass
     await engine.dispose()
-    logger.info("shutting_down_manga_translator_backend")
+    logger.info("shutdown.completed")
 
 
 app = FastAPI(
