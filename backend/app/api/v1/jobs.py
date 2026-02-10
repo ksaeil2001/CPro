@@ -1,5 +1,4 @@
 import json
-import os
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,6 +9,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.schemas.job import JobStatusResponse, PipelineLogResponse
 from app.services.job_service import get_job, get_job_logs
+from app.utils.security import get_job_result_path
 
 router = APIRouter()
 
@@ -40,9 +40,13 @@ async def get_job_status(
 @router.get("/jobs/{job_id}/result")
 async def get_job_result(job_id: uuid.UUID):
     """Download the translated image result."""
-    result_path = os.path.join(settings.result_dir, f"{job_id}.png")
-    if not os.path.exists(result_path):
-        raise HTTPException(status_code=404, detail="Result not ready or not found")
+    # Use secure path validation to prevent path traversal
+    result_path = get_job_result_path(
+        settings.result_dir,
+        job_id,
+        original=False,
+        check_exists=True,
+    )
 
     return FileResponse(
         result_path,
@@ -54,9 +58,13 @@ async def get_job_result(job_id: uuid.UUID):
 @router.get("/jobs/{job_id}/original")
 async def get_job_original(job_id: uuid.UUID):
     """Download the original uploaded image."""
-    original_path = os.path.join(settings.result_dir, f"{job_id}_original.png")
-    if not os.path.exists(original_path):
-        raise HTTPException(status_code=404, detail="Original image not found")
+    # Use secure path validation to prevent path traversal
+    original_path = get_job_result_path(
+        settings.result_dir,
+        job_id,
+        original=True,
+        check_exists=True,
+    )
 
     return FileResponse(
         original_path,

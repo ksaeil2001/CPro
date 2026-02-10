@@ -34,7 +34,14 @@ COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/pytho
 COPY --from=builder /usr/local/bin /usr/local/bin
 COPY --from=builder /app/fonts /app/fonts
 
-COPY . .
+# Create non-root user for security
+RUN adduser --disabled-password --gecos '' --uid 1000 appuser && \
+    mkdir -p /tmp/results && \
+    chown -R appuser:appuser /app /tmp/results
+
+COPY --chown=appuser:appuser . .
+
+USER appuser
 
 EXPOSE 8000
 

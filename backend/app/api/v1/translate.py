@@ -6,12 +6,13 @@ import uuid
 import cv2
 import numpy as np
 import structlog
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import async_session_factory, get_db
+from app.middleware.rate_limit import limiter
 from app.models.job import Job, JobStatus
 from app.pipeline.balloon_parser import BalloonParser
 from app.pipeline.base import PipelineContext
@@ -64,7 +65,9 @@ async def _read_with_limit(file: UploadFile, max_bytes: int) -> bytes:
 
 
 @router.post("/translate", response_model=JobCreateResponse)
+@limiter.limit("10/hour")  # Stricter limit for translation endpoint
 async def translate_image(
+    request: Request,  # Required for rate limiter
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),

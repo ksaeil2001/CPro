@@ -5,8 +5,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-manga}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-manga_dev_pass}
       POSTGRES_DB: ${POSTGRES_DB:-manga_translator}
-    ports:
-      - "5432:5432"
+    # Port removed - database only accessible via internal Docker network
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -14,6 +13,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    security_opt:
+      - no-new-privileges:true
 
   backend:
     build:
@@ -36,6 +37,8 @@ services:
       db:
         condition: service_healthy
     command: uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+    security_opt:
+      - no-new-privileges:true
 
   frontend:
     build:
@@ -51,6 +54,8 @@ services:
       - /app/.next
     depends_on:
       - backend
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   pgdata:

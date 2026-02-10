@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     debug: bool = False
 
+    # CORS
+    allowed_origins: str = "http://localhost:3000"  # Comma-separated list
+
     # Upload limits
     max_upload_size_bytes: int = 20 * 1024 * 1024  # 20 MB
     max_image_dimension: int = 10000
