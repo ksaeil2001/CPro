@@ -32,6 +32,8 @@ class Job(Base):
     total_cost_krw: Mapped[float] = mapped_column(Float, default=0.0)
     processing_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_message: Mapped[str | None] = mapped_column(String, nullable=True)
+    warnings_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    current_stage: Mapped[str | None] = mapped_column(String(50), nullable=True)
     original_filename: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

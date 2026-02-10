@@ -1,3 +1,6 @@
+import asyncio
+import os
+import time
 from contextlib import asynccontextmanager
 
 import structlog
@@ -16,10 +19,126 @@ structlog.configure(
 logger = structlog.get_logger()
 
 
+async def _ensure_font() -> None:
+    """Check font file exists; attempt download if missing."""
+    font_path = settings.font_path
+    if os.path.exists(font_path):
+        logger.info("font.found", path=font_path)
+        return
+
+    logger.warning("font.missing", path=font_path)
+    if not settings.ensure_font_on_startup:
+        logger.error("font.download_disabled_but_missing", path=font_path)
+        return
+
+    import httpx
+
+    os.makedirs(os.path.dirname(font_path) or ".", exist_ok=True)
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+            resp = await client.get(settings.font_download_url)
+            resp.raise_for_status()
+            with open(font_path, "wb") as f:
+                f.write(resp.content)
+        logger.info("font.downloaded", path=font_path, size=os.path.getsize(font_path))
+    except Exception as e:
+        logger.error("font.download_failed", error=str(e), path=font_path)
+
+
+def _preload_ocr() -> None:
+    try:
+        from app.pipeline.ocr_engine import get_shared_ocr
+
+        logger.info("startup.preloading_ocr")
+        get_shared_ocr()
+        logger.info("startup.ocr_ready")
+    except Exception as e:
+        logger.error("startup.ocr_preload_failed", error=str(e))
+
+
+def _preload_lama() -> None:
+    try:
+        from app.pipeline.inpainter import get_shared_lama
+
+        logger.info("startup.preloading_lama")
+        get_shared_lama()
+        logger.info("startup.lama_ready")
+    except Exception as e:
+        logger.error("startup.lama_preload_failed", error=str(e))
+
+
+async def _cleanup_old_results() -> None:
+    """Remove files in result_dir older than result_ttl_hours."""
+    result_dir = settings.result_dir
+    if not os.path.isdir(result_dir):
+        return
+
+    cutoff = time.time() - (settings.result_ttl_hours * 3600)
+    removed = 0
+    for filename in os.listdir(result_dir):
+        filepath = os.path.join(result_dir, filename)
+        if os.path.isfile(filepath) and os.path.getmtime(filepath) < cutoff:
+            try:
+                os.remove(filepath)
+                removed += 1
+            except OSError as e:
+                logger.warning("cleanup.remove_failed", file=filepath, error=str(e))
+
+    if removed > 0:
+        logger.info("cleanup.completed", removed_count=removed)
+
+
+async def _cleanup_loop() -> None:
+    """Periodically remove result files older than TTL."""
+    while True:
+        try:
+            await asyncio.sleep(settings.cleanup_interval_minutes * 60)
+            await _cleanup_old_results()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error("cleanup.error", error=str(e))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("starting_manga_translator_backend")
+
+    # Validate required settings
+    if not settings.database_url:
+        raise RuntimeError(
+            "DATABASE_URL is not set. "
+            "Set the DATABASE_URL environment variable or add it to .env"
+        )
+    if not settings.openai_api_key:
+        logger.warning(
+            "startup.no_openai_key",
+            detail="Translation will fail without an API key",
+        )
+
+    # Ensure font file exists
+    await _ensure_font()
+
+    # Preload ML models in parallel
+    if settings.preload_models:
+        logger.info("startup.preloading_models")
+        loop = asyncio.get_event_loop()
+        ocr_future = loop.run_in_executor(None, _preload_ocr)
+        lama_future = loop.run_in_executor(None, _preload_lama)
+        await asyncio.gather(ocr_future, lama_future, return_exceptions=True)
+        logger.info("startup.models_preloaded")
+
+    # Start result cleanup background task
+    cleanup_task = asyncio.create_task(_cleanup_loop())
+
     yield
+
+    # Shutdown
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
     await engine.dispose()
     logger.info("shutting_down_manga_translator_backend")
 

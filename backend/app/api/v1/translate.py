@@ -1,15 +1,18 @@
+import json as json_module
 import os
+import re
 import uuid
 
 import cv2
 import numpy as np
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import async_session_factory, get_db
-from app.models.job import JobStatus
+from app.models.job import Job, JobStatus
 from app.pipeline.balloon_parser import BalloonParser
 from app.pipeline.base import PipelineContext
 from app.pipeline.detector import TextDetector
@@ -42,6 +45,24 @@ ALLOWED_CONTENT_TYPES = {
 openai_circuit_breaker = CircuitBreaker("openai", failure_threshold=5, recovery_timeout_s=60)
 
 
+async def _read_with_limit(file: UploadFile, max_bytes: int) -> bytes:
+    """Read uploaded file in chunks, raising 413 if limit exceeded."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(64 * 1024)  # 64KB chunks
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Maximum size: {max_bytes // (1024 * 1024)}MB",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @router.post("/translate", response_model=JobCreateResponse)
 async def translate_image(
     background_tasks: BackgroundTasks,
@@ -57,8 +78,12 @@ async def translate_image(
             f"Allowed: {', '.join(ALLOWED_CONTENT_TYPES)}",
         )
 
-    # Read file
-    image_bytes = await file.read()
+    # Log upload with sanitized filename
+    safe_name = re.sub(r"[^\w\-.]", "_", file.filename or "unnamed")
+    logger.info("translate.upload_received", filename=safe_name, content_type=file.content_type)
+
+    # Read file with size limit
+    image_bytes = await _read_with_limit(file, settings.max_upload_size_bytes)
     if not image_bytes:
         raise HTTPException(status_code=400, detail="Empty file")
 
@@ -67,6 +92,15 @@ async def translate_image(
     image = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
     if image is None:
         raise HTTPException(status_code=400, detail="Could not decode image")
+
+    # Validate image dimensions
+    h, w = image.shape[:2]
+    max_dim = settings.max_image_dimension
+    if h > max_dim or w > max_dim:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Image dimensions {w}x{h} exceed maximum {max_dim}x{max_dim}",
+        )
 
     # Create job
     job = await create_job(db, original_filename=file.filename)
@@ -117,9 +151,30 @@ async def run_pipeline(job_id: uuid.UUID, image: np.ndarray) -> None:
                 with open(result_path, "wb") as f:
                     f.write(result_bytes)
 
-            await update_job_status(db, job_id, JobStatus.COMPLETED)
-            await db.commit()
+            # Collect warnings from pipeline
+            warnings = ctx.metadata.get("warnings", [])
 
+            # Determine outcome based on translation results
+            total_regions = len(ctx.regions) if ctx.regions else 0
+            mapped_translations = len(ctx.translations) if ctx.translations else 0
+
+            if total_regions > 0 and mapped_translations == 0:
+                await update_job_status(
+                    db,
+                    job_id,
+                    JobStatus.FAILED,
+                    error_message="Translation failed: no text regions were successfully translated.",
+                )
+            else:
+                await update_job_status(db, job_id, JobStatus.COMPLETED)
+
+            # Persist warnings
+            if warnings:
+                result = await db.execute(select(Job).where(Job.id == job_id))
+                job = result.scalar_one()
+                job.warnings_json = json_module.dumps(warnings, ensure_ascii=False)
+
+            await db.commit()
             logger.info("pipeline.job_completed", job_id=str(job_id))
 
         except Exception as e:

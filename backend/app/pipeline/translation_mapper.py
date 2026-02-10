@@ -28,9 +28,11 @@ class TranslationMapper(PipelineStage):
                 translated_map[tid] = text
 
         mapped = []
+        skipped = 0
         for region in ctx.regions:
             translated_text = translated_map.get(region.id)
             if not translated_text:
+                skipped += 1
                 continue
 
             # Use balloon bbox if available, otherwise use region bbox
@@ -55,10 +57,16 @@ class TranslationMapper(PipelineStage):
 
         ctx.translations = mapped
 
+        if skipped > 0:
+            ctx.metadata.setdefault("warnings", []).append(
+                f"{skipped} text region(s) had no translation and were skipped."
+            )
+
         logger.info(
             "translation_mapper.mapped",
             total_regions=len(ctx.regions),
             mapped_count=len(mapped),
+            skipped=skipped,
             job_id=str(ctx.job_id),
         )
         return ctx

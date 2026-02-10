@@ -1,4 +1,5 @@
 import uuid
+from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
@@ -43,3 +44,31 @@ def sample_manga_image() -> np.ndarray:
 @pytest.fixture
 def job_id() -> uuid.UUID:
     return uuid.uuid4()
+
+
+@pytest.fixture
+def mock_db_session():
+    """Create a mocked AsyncSession for unit tests."""
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+    session.refresh = AsyncMock()
+    session.execute = AsyncMock()
+    return session
+
+
+@pytest.fixture
+def mock_openai_response():
+    """Create a mock OpenAI chat completion response."""
+
+    def _make(content: str = '{"translations": []}', input_tokens: int = 100, output_tokens: int = 50):
+        response = MagicMock()
+        response.usage.prompt_tokens = input_tokens
+        response.usage.completion_tokens = output_tokens
+        response.choices = [MagicMock()]
+        response.choices[0].message.content = content
+        return response
+
+    return _make
