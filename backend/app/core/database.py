@@ -1,5 +1,6 @@
 from collections.abc import AsyncGenerator
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -35,3 +36,30 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         except Exception:
             await session.rollback()
             raise
+
+
+async def verify_database_connection() -> bool:
+    """
+    Verify database connectivity on startup.
+
+    Returns:
+        True if connection successful
+
+    Raises:
+        RuntimeError: If connection fails
+    """
+    try:
+        async with async_session_factory() as session:
+            # Simple query to verify connection
+            await session.execute(text("SELECT 1"))
+            return True
+    except Exception as e:
+        # Mask password in error message
+        masked_url = _db_url.split("@")[0].split("://")[0] + "://[REDACTED]@"
+        if "@" in _db_url:
+            masked_url += _db_url.split("@")[1]
+        raise RuntimeError(
+            f"Database connection failed: {str(e)}\n"
+            f"Ensure PostgreSQL is running and DATABASE_URL is correct.\n"
+            f"Current DATABASE_URL: {masked_url}"
+        ) from e

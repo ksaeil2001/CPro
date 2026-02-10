@@ -14,6 +14,7 @@ from app.core.config import settings
 from app.core.database import async_session_factory, get_db
 from app.middleware.rate_limit import limiter
 from app.models.job import Job, JobStatus
+from app.utils.file_validation import validate_upload
 from app.pipeline.balloon_parser import BalloonParser
 from app.pipeline.base import PipelineContext
 from app.pipeline.detector import TextDetector
@@ -34,13 +35,6 @@ from app.services.job_service import create_job, update_job_status
 logger = structlog.get_logger()
 
 router = APIRouter()
-
-ALLOWED_CONTENT_TYPES = {
-    "image/png",
-    "image/jpeg",
-    "image/jpg",
-    "image/webp",
-}
 
 # Shared circuit breaker instances
 openai_circuit_breaker = CircuitBreaker("openai", failure_threshold=5, recovery_timeout_s=60)
@@ -73,37 +67,24 @@ async def translate_image(
     db: AsyncSession = Depends(get_db),
 ):
     """Upload an image for translation."""
-    # Validate file type
-    if file.content_type not in ALLOWED_CONTENT_TYPES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type: {file.content_type}. "
-            f"Allowed: {', '.join(ALLOWED_CONTENT_TYPES)}",
-        )
-
     # Log upload with sanitized filename
     safe_name = re.sub(r"[^\w\-.]", "_", file.filename or "unnamed")
-    logger.info("translate.upload_received", filename=safe_name, content_type=file.content_type)
+    logger.info(
+        "translate.upload_received",
+        filename=safe_name,
+        claimed_content_type=file.content_type,
+    )
 
     # Read file with size limit
     image_bytes = await _read_with_limit(file, settings.max_upload_size_bytes)
-    if not image_bytes:
-        raise HTTPException(status_code=400, detail="Empty file")
 
-    # Decode image
-    nparr = np.frombuffer(image_bytes, np.uint8)
-    image = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
-    if image is None:
-        raise HTTPException(status_code=400, detail="Could not decode image")
-
-    # Validate image dimensions
-    h, w = image.shape[:2]
-    max_dim = settings.max_image_dimension
-    if h > max_dim or w > max_dim:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Image dimensions {w}x{h} exceed maximum {max_dim}x{max_dim}",
-        )
+    # Comprehensive validation: magic numbers, decode, dimensions
+    # This validates actual file content, not client-provided Content-Type
+    image, actual_mime = validate_upload(
+        image_bytes,
+        claimed_content_type=file.content_type,
+        max_dimension=settings.max_image_dimension,
+    )
 
     # Create job
     job = await create_job(db, original_filename=file.filename)
